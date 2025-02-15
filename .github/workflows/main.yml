@@ -17,103 +17,99 @@ jobs:
           # Install Ollama
           curl -L https://ollama.ai/install.sh | sh
           
-          # Start Ollama in background
-          ollama serve &
+          # Start Ollama in background with output logging
+          nohup ollama serve > ollama.log 2>&1 &
           
-          # Wait for Ollama to be ready by checking the root endpoint
+          # Store the PID
+          echo $! > ollama.pid
+          
+          # Wait for Ollama to be ready
           echo "Waiting for Ollama to be ready..."
-          timeout 600s bash -c '
+          timeout 180s bash -c '
             while ! curl -sf http://localhost:11434/ >/dev/null 2>&1; do
               echo "Waiting for Ollama... $(date)"
               sleep 5
             done
           '
           
-          # Try a simple model list command to verify Ollama is working
-          echo "Checking if Ollama is responsive..."
-          timeout 30s ollama list
-          
-          # If we get here, Ollama is ready
-          echo "Ollama is ready, pulling model..."
+          # Pull the model
+          echo "Pulling CodeLlama model..."
           ollama pull codellama
           
-      - name: Check Ollama Status
-        run: |
-          if ! curl -sf http://localhost:11434/api/health > /dev/null; then
-            echo "Ollama is not responding"
-            sudo systemctl status ollama
-            exit 1
-          fi
-
+          # Verify model is available
+          echo "Verifying model..."
+          ollama list | grep codellama
+          
+          # Keep Ollama running for subsequent steps
+          disown $(cat ollama.pid)
+      
       - name: PR Review
         uses: actions/github-script@v7
         with:
           script: |
             const util = require('util');
             const exec = util.promisify(require('child_process').exec);
-
             const prNumber = context.payload.pull_request.number;
             const repo = context.repo;
             
-            // Get the PR diff
-            const { data: files } = await github.rest.pulls.listFiles({
-              ...repo,
-              pull_number: prNumber,
-            });
+            // Additional error handling for Ollama
+            try {
+              // Test Ollama is responding before starting review
+              await exec('curl -sf http://localhost:11434/');
+            } catch (error) {
+              console.error('Ollama is not responding:', error);
+              core.setFailed('Ollama service is not available');
+              return;
+            }
             
-            // Get PR details
-            const { data: pullRequest } = await github.rest.pulls.get({
-              ...repo,
-              pull_number: prNumber,
-            });
-
-            for (const file of files) {
-              // Get file content
-              const { data: fileContent } = await github.rest.repos.getContent({
+            try {
+              // Get the PR diff
+              const { data: files } = await github.rest.pulls.listFiles({
                 ...repo,
-                path: file.filename,
-                ref: pullRequest.head.sha,
+                pull_number: prNumber,
               });
-
-              const content = Buffer.from(fileContent.content, 'base64').toString();
               
-              // Prepare prompt for CodeLlama
-              const prompt = `Review this code change and provide specific, actionable feedback:
+              // Get PR details
+              const { data: pullRequest } = await github.rest.pulls.get({
+                ...repo,
+                pull_number: prNumber,
+              });
               
-              File: ${file.filename}
-              Changes:
-              ${file.patch}
-
-              Please analyze for:
-              1. Potential bugs
-              2. Security issues
-              3. Performance improvements
-              4. Code style and best practices
-              5. Documentation needs
-
-              Provide specific, line-by-line feedback where applicable.`;
-
-              try {
-                // Call local Ollama API
-                const { stdout } = await exec(`curl -X POST http://localhost:11434/api/generate -d '{
-                  "model": "codellama",
-                  "prompt": ${JSON.stringify(prompt)},
-                  "stream": false
-                }'`);
-
-                const response = JSON.parse(stdout);
-                const review = response.response;
-
-                // Post review comment
-                await github.rest.pulls.createReviewComment({
-                  ...repo,
-                  pull_number: prNumber,
-                  body: review,
-                  commit_id: context.payload.pull_request.head.sha,
-                  path: file.filename,
-                  line: file.patch ? file.patch.split('\n').length : 1
-                });
-              } catch (error) {
-                console.error(`Error reviewing ${file.filename}:`, error);
+              for (const file of files) {
+                try {
+                  // Get file content with error handling
+                  const { data: fileContent } = await github.rest.repos.getContent({
+                    ...repo,
+                    path: file.filename,
+                    ref: pullRequest.head.sha,
+                  });
+                  
+                  const content = Buffer.from(fileContent.content, 'base64').toString();
+                  
+                  // Call Ollama with increased timeout and error handling
+                  const { stdout } = await exec(`curl -m 300 -X POST http://localhost:11434/api/generate -d '{
+                    "model": "codellama",
+                    "prompt": ${JSON.stringify(prompt)},
+                    "stream": false
+                  }'`, { maxBuffer: 10 * 1024 * 1024 });
+                  
+                  const response = JSON.parse(stdout);
+                  
+                  // Post review comment
+                  await github.rest.pulls.createReviewComment({
+                    ...repo,
+                    pull_number: prNumber,
+                    body: response.response,
+                    commit_id: context.payload.pull_request.head.sha,
+                    path: file.filename,
+                    line: file.patch ? file.patch.split('\n').length : 1
+                  });
+                } catch (error) {
+                  console.error(`Error processing file ${file.filename}:`, error);
+                  continue; // Continue with next file even if one fails
+                }
               }
-            } 
+            } catch (error) {
+              console.error('Error in PR review process:', error);
+              core.setFailed(error.message);
+            }
