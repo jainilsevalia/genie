@@ -52,17 +52,26 @@ jobs:
             const prNumber = context.payload.pull_request.number;
             const repo = context.repo;
             
-            // Additional error handling for Ollama
-            try {
-              // Test Ollama is responding before starting review
-              await exec('curl -sf http://localhost:11434/');
-            } catch (error) {
-              console.error('Ollama is not responding:', error);
-              core.setFailed('Ollama service is not available');
-              return;
+            async function generateReview(prompt) {
+              const { stdout } = await exec(`curl -m 300 -X POST http://localhost:11434/api/generate -d '{
+                "model": "codellama",
+                "prompt": ${JSON.stringify(prompt)},
+                "stream": false
+              }'`, { maxBuffer: 10 * 1024 * 1024 });
+              
+              return JSON.parse(stdout).response;
             }
             
-            try {
+            // Main review process
+            async function reviewPR() {
+              try {
+                // Test Ollama is responding
+                await exec('curl -sf http://localhost:11434/');
+              } catch (error) {
+                console.error('Ollama is not responding:', error);
+                throw new Error('Ollama service is not available');
+              }
+              
               // Get the PR diff
               const { data: files } = await github.rest.pulls.listFiles({
                 ...repo,
@@ -77,7 +86,7 @@ jobs:
               
               for (const file of files) {
                 try {
-                  // Get file content with error handling
+                  // Get file content
                   const { data: fileContent } = await github.rest.repos.getContent({
                     ...repo,
                     path: file.filename,
@@ -86,30 +95,40 @@ jobs:
                   
                   const content = Buffer.from(fileContent.content, 'base64').toString();
                   
-                  // Call Ollama with increased timeout and error handling
-                  const { stdout } = await exec(`curl -m 300 -X POST http://localhost:11434/api/generate -d '{
-                    "model": "codellama",
-                    "prompt": ${JSON.stringify(prompt)},
-                    "stream": false
-                  }'`, { maxBuffer: 10 * 1024 * 1024 });
+                  // Prepare prompt
+                  const prompt = `Review this code change and provide specific, actionable feedback:
+                  File: ${file.filename}
+                  Changes:
+                  ${file.patch}
+                  Please analyze for:
+                  1. Potential bugs
+                  2. Security issues
+                  3. Performance improvements
+                  4. Code style and best practices
+                  5. Documentation needs
+                  Provide specific, line-by-line feedback where applicable.`;
                   
-                  const response = JSON.parse(stdout);
+                  // Generate review
+                  const review = await generateReview(prompt);
                   
                   // Post review comment
                   await github.rest.pulls.createReviewComment({
                     ...repo,
                     pull_number: prNumber,
-                    body: response.response,
+                    body: review,
                     commit_id: context.payload.pull_request.head.sha,
                     path: file.filename,
                     line: file.patch ? file.patch.split('\n').length : 1
                   });
                 } catch (error) {
                   console.error(`Error processing file ${file.filename}:`, error);
-                  continue; // Continue with next file even if one fails
+                  continue;
                 }
               }
-            } catch (error) {
+            }
+            
+            // Run the review
+            await reviewPR().catch(error => {
               console.error('Error in PR review process:', error);
               core.setFailed(error.message);
-            }
+            });
