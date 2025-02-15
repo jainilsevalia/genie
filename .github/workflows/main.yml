@@ -20,19 +20,18 @@ jobs:
           # Start Ollama in background
           ollama serve &
           
-          # Print processes for debugging
-          echo "Checking Ollama processes:"
-          ps aux | grep ollama
-          
-          # Wait for Ollama with increased timeout and debugging
+          # Wait for Ollama to be ready by checking the root endpoint
           echo "Waiting for Ollama to be ready..."
-          timeout 180s bash -c '
-            while ! curl -sf http://localhost:11434/api/health >/dev/null 2>&1; do
+          timeout 600s bash -c '
+            while ! curl -sf http://localhost:11434/ >/dev/null 2>&1; do
               echo "Waiting for Ollama... $(date)"
-              ps aux | grep ollama
               sleep 5
             done
           '
+          
+          # Try a simple model list command to verify Ollama is working
+          echo "Checking if Ollama is responsive..."
+          timeout 30s ollama list
           
           # If we get here, Ollama is ready
           echo "Ollama is ready, pulling model..."
