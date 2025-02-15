@@ -52,10 +52,20 @@ jobs:
                   
                   res.on('end', () => {
                     try {
+                      if (res.statusCode !== 200) {
+                        reject(new Error(`Claude API returned status ${res.statusCode}: ${responseData}`));
+                        return;
+                      }
+                      
                       const response = JSON.parse(responseData);
+                      if (!response.content || !Array.isArray(response.content) || !response.content[0]) {
+                        reject(new Error(`Invalid Claude API response format: ${responseData}`));
+                        return;
+                      }
+                      
                       resolve(response.content[0].text);
                     } catch (error) {
-                      reject(new Error(`Failed to parse Claude API response: ${error.message}`));
+                      reject(new Error(`Failed to parse Claude API response: ${error.message}\nResponse: ${responseData}`));
                     }
                   });
                 });
@@ -84,44 +94,67 @@ jobs:
               
               for (const file of files) {
                 try {
+                  // Skip binary files and non-code files
+                  if (file.status === 'removed' || 
+                      file.filename.endsWith('.pdf') || 
+                      file.filename.endsWith('.docx') || 
+                      file.filename.endsWith('.prof')) {
+                    console.log(`Skipping file ${file.filename} (binary or removed file)`);
+                    continue;
+                  }
+                  
                   // Get file content
-                  const { data: fileContent } = await github.rest.repos.getContent({
-                    ...context.repo,
-                    path: file.filename,
-                    ref: pullRequest.head.sha
-                  });
-                  
-                  const content = Buffer.from(fileContent.content, 'base64').toString();
-                  
-                  // Prepare prompt for Claude
-                  const prompt = `You are a highly experienced code reviewer. Please review the following code changes and provide specific, actionable feedback.
+                  try {
+                    const { data: fileContent } = await github.rest.repos.getContent({
+                      ...context.repo,
+                      path: file.filename,
+                      ref: pullRequest.head.sha
+                    });
+                    
+                    const content = Buffer.from(fileContent.content, 'base64').toString();
+                    
+                    // Prepare prompt for Claude
+                    const prompt = `You are a highly experienced code reviewer. Please review the following code changes and provide specific, actionable feedback.
 
-                  File: ${file.filename}
-                  Changes:
-                  ${file.patch}
+                    File: ${file.filename}
+                    Changes:
+                    ${file.patch || 'New file'}
 
-                  Please analyze and provide detailed feedback on:
-                  1. Potential bugs or logical errors
-                  2. Security vulnerabilities or concerns
-                  3. Performance optimizations
-                  4. Code style and best practices
-                  5. Documentation completeness
-                  6. Testing considerations
-                  
-                  Format your response as clear, constructive feedback with specific line references where applicable. Be concise but thorough.`;
-                  
-                  // Generate review using Claude
-                  const review = await callClaudeAPI(prompt);
-                  
-                  // Post review comment
-                  await github.rest.pulls.createReviewComment({
-                    ...context.repo,
-                    pull_number: context.payload.pull_request.number,
-                    body: review,
-                    commit_id: pullRequest.head.sha,
-                    path: file.filename,
-                    line: file.patch ? file.patch.split('\n').length : 1
-                  });
+                    Please analyze and provide detailed feedback on:
+                    1. Potential bugs or logical errors
+                    2. Security vulnerabilities or concerns
+                    3. Performance optimizations
+                    4. Code style and best practices
+                    5. Documentation completeness
+                    
+                    Format your response as clear, constructive feedback with specific line references where applicable. Be concise but thorough.`;
+                    
+                    // Generate review using Claude
+                    console.log(`Reviewing file ${file.filename}...`);
+                    const review = await callClaudeAPI(prompt);
+                    
+                    if (!review) {
+                      throw new Error('Empty review received from Claude API');
+                    }
+                    
+                    // Post review comment
+                    await github.rest.pulls.createReviewComment({
+                      ...context.repo,
+                      pull_number: context.payload.pull_request.number,
+                      body: review,
+                      commit_id: pullRequest.head.sha,
+                      path: file.filename,
+                      line: file.patch ? file.patch.split('\n').length : 1
+                    });
+                    
+                    console.log(`Successfully reviewed ${file.filename}`);
+                  } catch (error) {
+                    if (error.status === 404) {
+                      console.log(`File ${file.filename} not found, skipping`);
+                      continue;
+                    }
+                    throw error;
+                  }
                 } catch (error) {
                   console.error(`Error processing file ${file.filename}:`, error);
                   core.error(`Failed to review file ${file.filename}: ${error.message}`);
