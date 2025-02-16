@@ -13,98 +13,125 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
       
+      - name: Install Ollama
+        run: |
+          echo "::group::Installing Ollama"
+          curl -fsSL https://ollama.com/install.sh | sh
+          echo "Ollama version:"
+          ollama --version
+          echo "::endgroup::"
+        
+      - name: Pull Deepseek Model
+        run: |
+          echo "::group::Pulling Deepseek Model"
+          start_time=$(date +%s)
+          echo "Starting model pull at $(date)"
+          ollama pull deepseek-coder:33b
+          end_time=$(date +%s)
+          duration=$((end_time - start_time))
+          echo "Model pull completed in ${duration} seconds"
+          echo "::endgroup::"
+      
       - name: PR Review
         uses: actions/github-script@v7
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         with:
           script: |
-            const https = require('https');
+            const { exec } = require('child_process');
+            const util = require('util');
+            const execPromise = util.promisify(exec);
             
-            async function callClaudeAPI(prompt) {
-              return new Promise((resolve, reject) => {
-                const data = JSON.stringify({
-                  model: "claude-3-opus-20240229",
-                  max_tokens: 4000,
-                  messages: [{
-                    role: "user",
-                    content: prompt
-                  }]
-                });
+            // Helper function to create GitHub annotations
+            function createAnnotation(type, message, file = null, line = null) {
+              const annotation = {
+                title: 'PR Review Bot',
+                message: message
+              };
+              
+              if (file) {
+                annotation.file = file;
+                if (line) {
+                  annotation.line = line;
+                }
+              }
+              
+              switch(type) {
+                case 'error':
+                  core.error(message, annotation);
+                  break;
+                case 'warning':
+                  core.warning(message, annotation);
+                  break;
+                case 'notice':
+                  core.notice(message, annotation);
+                  break;
+                default:
+                  console.log(message);
+              }
+            }
+            
+            async function callOllama(prompt, filename) {
+              console.log(`::group::Ollama Request for ${filename}`);
+              const start_time = Date.now();
+              try {
+                console.log('Sending prompt to Ollama...');
+                const { stdout, stderr } = await execPromise(`ollama run deepseek-coder:33b "${prompt.replace(/"/g, '\\"')}"`);
+                const duration = ((Date.now() - start_time) / 1000).toFixed(2);
                 
-                const options = {
-                  hostname: 'api.anthropic.com',
-                  path: '/v1/messages',
-                  method: 'POST',
-                  headers: {
-                    'Content-Type': 'application/json',
-                    'x-api-key': process.env.ANTHROPIC_API_KEY,
-                    'anthropic-version': '2023-06-01'
-                  }
-                };
+                if (stderr) {
+                  console.error('Ollama stderr:', stderr);
+                  createAnnotation('warning', `Ollama generated stderr output for ${filename}: ${stderr}`);
+                }
                 
-                const req = https.request(options, (res) => {
-                  let responseData = '';
-                  
-                  res.on('data', (chunk) => {
-                    responseData += chunk;
-                  });
-                  
-                  res.on('end', () => {
-                    try {
-                      if (res.statusCode !== 200) {
-                        reject(new Error(`Claude API returned status ${res.statusCode}: ${responseData}`));
-                        return;
-                      }
-                      
-                      const response = JSON.parse(responseData);
-                      if (!response.content || !Array.isArray(response.content) || !response.content[0]) {
-                        reject(new Error(`Invalid Claude API response format: ${responseData}`));
-                        return;
-                      }
-                      
-                      resolve(response.content[0].text);
-                    } catch (error) {
-                      reject(new Error(`Failed to parse Claude API response: ${error.message}\nResponse: ${responseData}`));
-                    }
-                  });
-                });
-                
-                req.on('error', (error) => {
-                  reject(new Error(`Claude API request failed: ${error.message}`));
-                });
-                
-                req.write(data);
-                req.end();
-              });
+                console.log(`Ollama response received in ${duration} seconds`);
+                console.log('Response length:', stdout.length);
+                console.log('::endgroup::');
+                return stdout.trim();
+              } catch (error) {
+                console.log('::endgroup::');
+                throw new Error(`Ollama request failed: ${error.message}`);
+              }
             }
             
             async function reviewPR() {
+              const start_time = Date.now();
+              createAnnotation('notice', 'Starting PR review process');
+              
               // Get the PR diff
+              console.log('Fetching PR files...');
               const { data: files } = await github.rest.pulls.listFiles({
                 ...context.repo,
                 pull_number: context.payload.pull_request.number
               });
+              console.log(`Found ${files.length} files to review`);
               
               // Get PR details
+              console.log('Fetching PR details...');
               const { data: pullRequest } = await github.rest.pulls.get({
                 ...context.repo,
                 pull_number: context.payload.pull_request.number
               });
               
+              let processedFiles = 0;
+              let skippedFiles = 0;
+              let errorFiles = 0;
+              
               for (const file of files) {
+                console.log(`\n::group::Processing ${file.filename}`);
                 try {
                   // Skip binary files and non-code files
                   if (file.status === 'removed' || 
                       file.filename.endsWith('.pdf') || 
                       file.filename.endsWith('.docx') || 
                       file.filename.endsWith('.prof')) {
-                    console.log(`Skipping file ${file.filename} (binary or removed file)`);
+                    console.log(`Skipping file (binary or removed file)`);
+                    skippedFiles++;
+                    console.log('::endgroup::');
                     continue;
                   }
                   
                   // Get file content
                   try {
+                    console.log('Fetching file content...');
                     const { data: fileContent } = await github.rest.repos.getContent({
                       ...context.repo,
                       path: file.filename,
@@ -112,8 +139,9 @@ jobs:
                     });
                     
                     const content = Buffer.from(fileContent.content, 'base64').toString();
+                    console.log(`File content length: ${content.length} characters`);
                     
-                    // Prepare prompt for Claude
+                    // Prepare prompt for Deepseek
                     const prompt = `You are a highly experienced code reviewer. Please review the following code changes and provide specific, actionable feedback.
 
                     File: ${file.filename}
@@ -129,15 +157,16 @@ jobs:
                     
                     Format your response as clear, constructive feedback with specific line references where applicable. Be concise but thorough.`;
                     
-                    // Generate review using Claude
-                    console.log(`Reviewing file ${file.filename}...`);
-                    const review = await callClaudeAPI(prompt);
+                    // Generate review using Ollama
+                    console.log('Generating review...');
+                    const review = await callOllama(prompt, file.filename);
                     
                     if (!review) {
-                      throw new Error('Empty review received from Claude API');
+                      throw new Error('Empty review received from Ollama');
                     }
                     
                     // Post review comment
+                    console.log('Posting review comment...');
                     await github.rest.pulls.createReviewComment({
                       ...context.repo,
                       pull_number: context.payload.pull_request.number,
@@ -147,26 +176,40 @@ jobs:
                       line: file.patch ? file.patch.split('\n').length : 1
                     });
                     
-                    console.log(`Successfully reviewed ${file.filename}`);
+                    processedFiles++;
+                    createAnnotation('notice', `Successfully reviewed ${file.filename}`, file.filename);
                   } catch (error) {
                     if (error.status === 404) {
-                      console.log(`File ${file.filename} not found, skipping`);
+                      console.log(`File not found, skipping`);
+                      skippedFiles++;
+                      console.log('::endgroup::');
                       continue;
                     }
                     throw error;
                   }
                 } catch (error) {
-                  console.error(`Error processing file ${file.filename}:`, error);
-                  core.error(`Failed to review file ${file.filename}: ${error.message}`);
-                  continue;
+                  console.error(`Error details:`, error);
+                  createAnnotation('error', `Failed to review file: ${error.message}`, file.filename);
+                  errorFiles++;
                 }
+                console.log('::endgroup::');
               }
+              
+              const duration = ((Date.now() - start_time) / 1000).toFixed(2);
+              const summary = `PR Review completed in ${duration} seconds:
+              - Processed: ${processedFiles} files
+              - Skipped: ${skippedFiles} files
+              - Errors: ${errorFiles} files`;
+              
+              createAnnotation('notice', summary);
+              console.log('\nDetailed Summary:\n' + summary);
             }
             
             // Run the review
             try {
               await reviewPR();
             } catch (error) {
-              console.error('Error in PR review process:', error);
+              console.error('Fatal error in PR review process:', error);
+              createAnnotation('error', `PR review process failed: ${error.message}`);
               core.setFailed(error.message);
             }
