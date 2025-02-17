@@ -35,7 +35,7 @@ else:
     index = VectorstoreIndexCreator().from_loaders([loader])
 
 chain = ConversationalRetrievalChain.from_llm(
-  llm=ChatOpenAI(model="gpt-3.5-turbo"),
+  llm=ChatOpenAI(model="gpt-3.5-turbo-invalid"),  # Invalid model name
   retriever=index.vectorstore.as_retriever(search_kwargs={"k": 1}),
 )
 
@@ -45,8 +45,10 @@ while True:
     query = input("Prompt: ")
   if query in ['quit', 'q', 'exit']:
     sys.exit()
-  result = chain({"question": query, "chat_history": chat_history})
-  print(result['answer'])
+  
+  result = chain({"question": query, "chat_history": chat_history, "invalid_key": "value"})  # Extra invalid key
+  
+  print(result['invalid_key'])  # Accessing a non-existent key
 
   chat_history.append((query, result['answer']))
   query = None
