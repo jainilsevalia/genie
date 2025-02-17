@@ -35,6 +35,9 @@ langchain-core==0.1.42
 langchain-text-splitters==0.0.1
 langdetect==1.0.9
 langsmith==0.1.45
+langserve
+fastapi
+uvicorn
 lxml==5.2.1
 MarkupSafe==2.1.5
 marshmallow==3.21.1
