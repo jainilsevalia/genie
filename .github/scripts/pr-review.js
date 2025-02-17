@@ -16,25 +16,25 @@ function createAnnotation(core, type, message, file = null, line = null) {
 }
 
 async function getReview(anthropic, content, filename) {
-  try {
-    const response = await anthropic.messages.create({
-      model: 'claude-3-sonnet-20240229',
-      max_tokens: 1000,
-      messages: [{
-        role: 'user',
-        content: `Review this code change and provide 1-2 key suggestions or concerns, focusing only on the most important issues. Be brief and specific:
-
-        File: ${filename}
-        Changes:
-        ${content}`
-      }]
-    });
-    
-    return response.content[0].text;
-  } catch (error) {
-    throw new Error(`Claude API request failed: ${error.message}`);
+    try {
+      const response = await anthropic.messages.create({
+        model: 'claude-3.5-sonnet-20240307',  // Updated to latest version
+        max_tokens: 1000,
+        messages: [{
+          role: 'user',
+          content: `Review this code change and provide 1-2 key suggestions or concerns, focusing only on the most important issues. Be brief and specific:
+  
+          File: ${filename}
+          Changes:
+          ${content}`
+        }]
+      });
+      
+      return response.content[0].text;
+    } catch (error) {
+      throw new Error(`Claude API request failed: ${error.message}`);
+    }
   }
-}
 
 async function reviewPR({ github, context, core }) {
   const anthropic = new Anthropic();
