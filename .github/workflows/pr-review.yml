@@ -12,20 +12,50 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
+        id: checkout
+        env:
+          LOG_LEVEL: debug
+        run: |
+          echo "Checking out repository..."
+          echo "Repository: ${{ github.repository }}"
+          echo "Ref: ${{ github.ref }}"
+          echo "SHA: ${{ github.sha }}"
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
+        id: setup-node
         with:
           node-version: '20'
-          
+        env:
+          LOG_LEVEL: debug
+        run: |
+          echo "Setting up Node.js version 20..."
+          echo "Node.js version: $(node -v)"
+          echo "NPM version: $(npm -v)"
+
       - name: Install dependencies
-        run: npm install @anthropic-ai/sdk
-      
+        id: install-deps
+        run: |
+          echo "Installing dependencies..."
+          npm install @anthropic-ai/sdk
+          echo "Dependencies installed successfully."
+
       - name: Run PR Review
+        id: run-pr-review
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          LOG_LEVEL: debug
         uses: actions/github-script@v7
         with:
           script: |
+            const core = require('@actions/core');
             const { reviewPR } = require('./.github/scripts/pr-review.js');
-            await reviewPR({ github, context, core });
+
+            core.info('Starting PR review process...');
+            try {
+              await reviewPR({ github, context, core });
+              core.info('PR review completed successfully.');
+            } catch (error) {
+              core.error('PR review failed: ' + error.message);
+              core.setFailed(error.message);
+            }
