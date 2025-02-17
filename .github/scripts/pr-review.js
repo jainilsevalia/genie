@@ -39,86 +39,105 @@ async function getReview(anthropic, content, filename, core) {
 }
 
 async function reviewPR({ github, context, core }) {
-  const anthropic = new Anthropic({
-    apiKey: process.env.ANTHROPIC_API_KEY, // Ensure API key is set
-  });
-
-  const start_time = Date.now();
+    const anthropic = new Anthropic({
+      apiKey: process.env.ANTHROPIC_API_KEY, // Ensure API key is set
+    });
   
-  try {
-    core.info('Starting PR review process...');
+    const start_time = Date.now();
     
-    const { data: files } = await github.rest.pulls.listFiles({
-      ...context.repo,
-      pull_number: context.payload.pull_request.number
-    });
-
-    core.info(`Found ${files.length} files in the PR`);
-    
-    const { data: pullRequest } = await github.rest.pulls.get({
-      ...context.repo,
-      pull_number: context.payload.pull_request.number
-    });
-
-    core.info(`PR details fetched: ${pullRequest.title}`);
-
-    let processedFiles = 0;
-    let skippedFiles = 0;
-    let errorFiles = 0;
-
-    for (const file of files) {
-      if (file.status === 'removed' || file.filename.match(/\.(pdf|docx|prof|png|jpg|jpeg|gif)$/i)) {
-        core.info(`Skipping file: ${file.filename} (removed or unsupported type)`);
-        skippedFiles++;
-        continue;
-      }
-
-      try {
-        core.info(`Fetching content for file: ${file.filename}`);
-        
-        const patch = file.patch || 'New file'; // Use file patch if available
-
-        core.info(`Reviewing file: ${file.filename}`);
-        const review = await getReview(anthropic, patch, file.filename, core);
-
-        if (review) {
-          core.info(`Creating review comment for file: ${file.filename}`);
-          await github.rest.pulls.createReviewComment({
-            ...context.repo,
-            pull_number: context.payload.pull_request.number,
-            body: review,
-            commit_id: pullRequest.head.sha,
-            path: file.filename,
-            line: patch.split('\n').length || 1
-          });
-          processedFiles++;
-        }
-      } catch (error) {
-        if (error.status !== 404) {
-          errorFiles++;
-          createAnnotation(core, 'error', 
-            `Failed to review ${file.filename}: ${error.message}`, 
-            file.filename
-          );
-        } else {
-          core.info(`Skipping file: ${file.filename} (not found)`);
+    try {
+      core.info('Starting PR review process...');
+      
+      const { data: files } = await github.rest.pulls.listFiles({
+        ...context.repo,
+        pull_number: context.payload.pull_request.number
+      });
+  
+      core.info(`Found ${files.length} files in the PR`);
+      
+      const { data: pullRequest } = await github.rest.pulls.get({
+        ...context.repo,
+        pull_number: context.payload.pull_request.number
+      });
+  
+      core.info(`PR details fetched: ${pullRequest.title}`);
+  
+      let processedFiles = 0;
+      let skippedFiles = 0;
+      let errorFiles = 0;
+  
+      for (const file of files) {
+        if (file.status === 'removed' || file.filename.match(/\.(pdf|docx|prof|png|jpg|jpeg|gif)$/i)) {
+          core.info(`Skipping file: ${file.filename} (removed or unsupported type)`);
           skippedFiles++;
+          continue;
+        }
+  
+        try {
+          core.info(`Fetching content for file: ${file.filename}`);
+          
+          const patch = file.patch || 'New file'; // Use file patch if available
+  
+          core.info(`Reviewing file: ${file.filename}`);
+          const review = await getReview(anthropic, patch, file.filename, core);
+  
+          if (review) {
+            core.info(`Creating review comment for file: ${file.filename}`);
+  
+            // Extract a valid line number from the diff
+            const diffHunk = file.patch.split('\n');
+            let validLine = null;
+            for (const line of diffHunk) {
+              if (line.startsWith('+')) { // Find an added line
+                validLine = line;
+                break;
+              }
+            }
+  
+            if (!validLine) {
+              core.warning(`Skipping file ${file.filename} - No valid added lines found in diff.`);
+              continue;
+            }
+  
+            const lineIndex = diffHunk.indexOf(validLine) + 1; // Get the line position
+  
+            await github.rest.pulls.createReviewComment({
+              ...context.repo,
+              pull_number: context.payload.pull_request.number,
+              body: review,
+              commit_id: pullRequest.head.sha,
+              path: file.filename,
+              line: lineIndex,
+            });
+            processedFiles++;
+          }
+        } catch (error) {
+          if (error.status !== 404) {
+            errorFiles++;
+            createAnnotation(core, 'error', 
+              `Failed to review ${file.filename}: ${error.message}`, 
+              file.filename
+            );
+          } else {
+            core.info(`Skipping file: ${file.filename} (not found)`);
+            skippedFiles++;
+          }
         }
       }
+  
+      const duration = ((Date.now() - start_time) / 1000).toFixed(2);
+      createAnnotation(core, 'notice', 
+        `PR Review completed in ${duration}s: ${processedFiles} processed, ${skippedFiles} skipped, ${errorFiles} errors`
+      );
+  
+      core.info(`PR Review completed in ${duration}s`);
+  
+    } catch (error) {
+      createAnnotation(core, 'error', `PR review process failed: ${error.message}`);
+      core.error(`PR review process failed: ${error.message}`);
+      throw error;
     }
-
-    const duration = ((Date.now() - start_time) / 1000).toFixed(2);
-    createAnnotation(core, 'notice', 
-      `PR Review completed in ${duration}s: ${processedFiles} processed, ${skippedFiles} skipped, ${errorFiles} errors`
-    );
-
-    core.info(`PR Review completed in ${duration}s`);
-
-  } catch (error) {
-    createAnnotation(core, 'error', `PR review process failed: ${error.message}`);
-    core.error(`PR review process failed: ${error.message}`);
-    throw error;
   }
-}
+  
 
 module.exports = { reviewPR };
