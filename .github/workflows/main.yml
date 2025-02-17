@@ -25,31 +25,19 @@ jobs:
         id: model-pull
         run: |
           echo "::group::Pulling Deepseek Model"
-          start_time=$(date +%s)
-          echo "Starting model pull at $(date)"
-          
           # Start Ollama service
           ollama serve &
           
           # Wait for service to be ready
-          echo "Waiting for Ollama service to start..."
           sleep 30
           
           # Pull the model with a timeout of 10 minutes
           timeout 600 ollama pull deepseek-coder:33b
           
-          # Verify model is ready
-          echo "Verifying model setup..."
+          # Verify and wait for model
           ollama list | grep deepseek-coder:33b
-          
-          end_time=$(date +%s)
-          duration=$((end_time - start_time))
-          echo "Model pull completed in ${duration} seconds"
-          echo "::endgroup::"
-          
-          # Additional wait time to ensure model is fully loaded
-          echo "Allowing additional time for model initialization..."
           sleep 60
+          echo "::endgroup::"
       
       - name: Setup Node.js
         uses: actions/setup-node@v4
