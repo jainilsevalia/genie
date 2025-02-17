@@ -46,11 +46,10 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const core = require('@actions/core');
             const { reviewPR } = require('./.github/scripts/pr-review.js');
-            
-            core.info('Starting PR review process...');
+
             try {
+              core.info('Starting PR review process...');
               await reviewPR({ github, context, core });
               core.info('PR review completed successfully.');
             } catch (error) {
