@@ -47,12 +47,14 @@ jobs:
         with:
           script: |
             const { reviewPR } = require('./.github/scripts/pr-review.js');
-
-            try {
-              core.info('Starting PR review process...');
-              await reviewPR({ github, context, core });
-              core.info('PR review completed successfully.');
-            } catch (error) {
-              core.error('PR review failed: ' + error.message);
-              core.setFailed(error.message);
-            }
+            
+            (async () => {
+              try {
+                core.info('Starting PR review process...');
+                await reviewPR({ github, context, core });
+                core.info('PR review completed successfully.');
+              } catch (error) {
+                core.error('PR review failed: ' + error.message);
+                core.setFailed(error.message);
+              }
+            })();

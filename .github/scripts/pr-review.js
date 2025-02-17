@@ -15,21 +15,34 @@ function createAnnotation(core, type, message, file = null, line = null) {
   }
 }
 
-const response = await anthropic.messages.create({
-    model: 'claude-3-5-sonnet-20241022',  // Updated to the latest model
-    max_tokens: 1000,
-    messages: [{
-      role: 'user',
-      content: `Review this code change and provide 1-2 key suggestions or concerns, focusing only on the most important issues. Be brief and specific:
-  
-      File: ${filename}
-      Changes:
-      ${content}`
-    }]
-  });  
+async function getReview(anthropic, content, filename, core) {
+  try {
+    core.info(`Requesting review from Claude for ${filename}...`);
+    const response = await anthropic.messages.create({
+      model: 'claude-3-5-sonnet-20241022', // Updated to latest model
+      max_tokens: 1000,
+      messages: [{
+        role: 'user',
+        content: `Review this code change and provide 1-2 key suggestions or concerns, focusing only on the most important issues. Be brief and specific:
+        
+        **File:** ${filename}
+        **Changes:**
+        ${content}`
+      }]
+    });
+
+    return response?.content?.[0]?.text?.trim() || null;
+  } catch (error) {
+    core.error(`Failed to generate review for ${filename}: ${error.message}`);
+    return null;
+  }
+}
 
 async function reviewPR({ github, context, core }) {
-  const anthropic = new Anthropic();
+  const anthropic = new Anthropic({
+    apiKey: process.env.ANTHROPIC_API_KEY, // Ensure API key is set
+  });
+
   const start_time = Date.now();
   
   try {
@@ -39,44 +52,35 @@ async function reviewPR({ github, context, core }) {
       ...context.repo,
       pull_number: context.payload.pull_request.number
     });
-    
+
     core.info(`Found ${files.length} files in the PR`);
     
     const { data: pullRequest } = await github.rest.pulls.get({
       ...context.repo,
       pull_number: context.payload.pull_request.number
     });
-    
+
     core.info(`PR details fetched: ${pullRequest.title}`);
-    
+
     let processedFiles = 0;
     let skippedFiles = 0;
     let errorFiles = 0;
-    
+
     for (const file of files) {
-      if (file.status === 'removed' || 
-          file.filename.match(/\.(pdf|docx|prof|png|jpg)$/)) {
+      if (file.status === 'removed' || file.filename.match(/\.(pdf|docx|prof|png|jpg|jpeg|gif)$/i)) {
         core.info(`Skipping file: ${file.filename} (removed or unsupported type)`);
         skippedFiles++;
         continue;
       }
-      
+
       try {
         core.info(`Fetching content for file: ${file.filename}`);
-        const { data: fileContent } = await github.rest.repos.getContent({
-          ...context.repo,
-          path: file.filename,
-          ref: pullRequest.head.sha
-        });
         
+        const patch = file.patch || 'New file'; // Use file patch if available
+
         core.info(`Reviewing file: ${file.filename}`);
-        const review = await getReview(
-          anthropic,
-          file.patch || 'New file',
-          file.filename,
-          core
-        );
-        
+        const review = await getReview(anthropic, patch, file.filename, core);
+
         if (review) {
           core.info(`Creating review comment for file: ${file.filename}`);
           await github.rest.pulls.createReviewComment({
@@ -85,7 +89,7 @@ async function reviewPR({ github, context, core }) {
             body: review,
             commit_id: pullRequest.head.sha,
             path: file.filename,
-            line: file.patch ? file.patch.split('\n').length : 1
+            line: patch.split('\n').length || 1
           });
           processedFiles++;
         }
@@ -102,14 +106,14 @@ async function reviewPR({ github, context, core }) {
         }
       }
     }
-    
+
     const duration = ((Date.now() - start_time) / 1000).toFixed(2);
     createAnnotation(core, 'notice', 
       `PR Review completed in ${duration}s: ${processedFiles} processed, ${skippedFiles} skipped, ${errorFiles} errors`
     );
-    
+
     core.info(`PR Review completed in ${duration}s`);
-    
+
   } catch (error) {
     createAnnotation(core, 'error', `PR review process failed: ${error.message}`);
     core.error(`PR review process failed: ${error.message}`);
