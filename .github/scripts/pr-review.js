@@ -7,17 +7,17 @@ function createAnnotation(core, type, message, file = null, line = null) {
     if (line) annotation.line = line;
   }
   
-  switch(type) {
-    case 'error': 
-      core.error(message, annotation); 
+  switch (type) {
+    case 'error':
+      core.error(message, annotation);
       break;
-    case 'warning': 
-      core.warning(message, annotation); 
+    case 'warning':
+      core.warning(message, annotation);
       break;
-    case 'notice': 
-      core.notice(message, annotation); 
+    case 'notice':
+      core.notice(message, annotation);
       break;
-    default: 
+    default:
       console.log(message);
   }
 }
@@ -37,7 +37,6 @@ Changes:
 ${content}`
       }]
     });
-
     return response?.content?.[0]?.text?.trim() || null;
   } catch (error) {
     core.error(`Failed to generate review for ${filename}: ${error.message}`);
@@ -72,7 +71,10 @@ async function reviewPR({ github, context, core }) {
     let errorFiles = 0;
 
     for (const file of files) {
-      if (file.status === 'removed' || file.filename.match(/\.(pdf|docx|prof|png|jpg|jpeg|gif)$/i)) {
+      if (
+        file.status === 'removed' ||
+        file.filename.match(/\.(pdf|docx|prof|png|jpg|jpeg|gif)$/i)
+      ) {
         core.info(`Skipping file: ${file.filename} (removed or unsupported type)`);
         skippedFiles++;
         continue;
@@ -80,7 +82,7 @@ async function reviewPR({ github, context, core }) {
 
       try {
         core.info(`Fetching content for file: ${file.filename}`);
-        // Use file.patch (if available) to review the diff; otherwise, use a placeholder.
+        // Use file.patch if available; otherwise, assume "New file"
         const patch = file.patch || 'New file';
 
         core.info(`Reviewing file: ${file.filename}`);
@@ -90,26 +92,30 @@ async function reviewPR({ github, context, core }) {
           core.info(`Creating review comment for file: ${file.filename}`);
 
           if (!file.patch) {
-            core.warning(`Skipping file ${file.filename} - no patch available to determine diff hunk`);
+            core.warning(`Skipping file ${file.filename} - no patch available to determine diff position`);
             continue;
           }
 
-          // Extract the first diff hunk from the patch.
-          const diffHunkMatch = file.patch.match(/(@@.*@@)/);
-          if (!diffHunkMatch) {
-            core.warning(`Skipping file ${file.filename} - no valid diff hunk found`);
-            continue;
+          // Compute the "position" as the relative line index in the patch diff
+          const patchLines = file.patch.split('\n');
+          let position = null;
+          for (let i = 0; i < patchLines.length; i++) {
+            const line = patchLines[i];
+            // Skip diff headers or file info lines
+            if (line.startsWith('@@') || line.startsWith('---') || line.startsWith('+++')) {
+              continue;
+            }
+            // Use the first added line as the comment position
+            if (line.startsWith('+')) {
+              position = i + 1; // GitHub expects 1-indexed positions
+              break;
+            }
           }
-          const diffHunk = diffHunkMatch[1];
 
-          // Parse the diff hunk header to extract the starting line number in the new file.
-          // The header is in the format: @@ -oldStart,oldCount +newStart,newCount @@ optional context
-          const headerMatch = diffHunk.match(/\+(\d+),(\d+)/);
-          if (!headerMatch) {
-            core.warning(`Skipping file ${file.filename} - unable to parse diff hunk header`);
+          if (position === null) {
+            core.warning(`Skipping file ${file.filename} - no valid added line found in diff for comment position`);
             continue;
           }
-          const commentLine = parseInt(headerMatch[1], 10);
 
           await github.rest.pulls.createReviewComment({
             ...context.repo,
@@ -117,9 +123,7 @@ async function reviewPR({ github, context, core }) {
             body: review,
             commit_id: pullRequest.head.sha,
             path: file.filename,
-            line: commentLine,
-            diff_hunk: diffHunk,
-            side: 'RIGHT'
+            position: position,
           });
           processedFiles++;
         }
