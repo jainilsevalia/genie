@@ -30,7 +30,8 @@ async function getReview(anthropic, content, filename, core) {
       max_tokens: 1000,
       messages: [{
         role: 'user',
-        content: `Review this code change and provide 1-2 key suggestions or concerns, focusing only on the most important issues. Be brief and specific:
+        // content: `Review this code change and provide 1-2 key suggestions or concerns, focusing only on the most important issues. Be brief and specific:
+        content: `You are a seasoned Senior Developer reviewing a code change. Provide insightful, constructive feedback, identifying logical issues, performance concerns, or maintainability improvements. If possible, add a humorous twist to keep it engaging. Be specific and direct. Do not add long comments. Be a real dev who add comments that make sense and would be short. 
         
 File: ${filename}
 Changes:
