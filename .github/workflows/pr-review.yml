@@ -1,11 +1,14 @@
 name: PR Review Bot
 on:
   pull_request:
-    types: [opened, synchronize]
+    types: [review_requested]
 
 jobs:
   review:
     runs-on: ubuntu-latest
+    if: |
+      contains(github.event.pull_request.requested_reviewers.*.login, 'jainilsevalia') ||
+      contains(github.event.pull_request.requested_reviewers.*.login, 'shivam-patel-123') 
     permissions:
       pull-requests: write
       contents: read
